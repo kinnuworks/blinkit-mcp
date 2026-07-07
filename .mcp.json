@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "blinkit": {
+      "command": "node",
+      "args": ["/path/to/blinkit-mcp/dist/index.js"]
+    }
+  }
+}
