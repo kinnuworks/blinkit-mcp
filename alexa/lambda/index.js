@@ -1,15 +1,22 @@
 /**
  * "Milk man" — Alexa skill that orders 4 x one fixed milk SKU on Blinkit.
  *
- *   Turn 1  "order milk"  → OrderMilkIntent : stock check → server cart → bind address →
+ *   Turn 1  "order milk"  → OrderMilkIntent, or LaunchRequest once configured (so an Alexa
+ *                            Routine with the phrase "order milk" that opens the skill starts the
+ *                            order straight away) : stock check → server cart → bind address →
  *                            validate → speak REAL total → wait for yes/no (cart_id kept in
  *                            session attributes only).
  *   Turn 2  "yes"         → AMAZON.YesIntent (guarded by cart_id) : createOrder → CASH ON DELIVERY
  *                            (default; verified offered for this cart) — or, with payment="upi", a UPI
  *                            collect to the configured VPA (fallback: upi:// link on an Alexa-app card).
- *   Launch  "open milk man" → connectivity smoke test (impit + Blinkit bootstrap). This is
- *                            the Gate-2 test: if impit's native module can't load on this
- *                            runtime, the error is spoken and written to the card.
+ *   Launch  "open milk man" → BEFORE the DynamoDB item is seeded: connectivity smoke test
+ *                            (impit + Blinkit bootstrap) — the Gate-2 test; a native-module load
+ *                            failure is spoken and written to the card. AFTER seeding: same as
+ *                            "order milk". StatusIntent ("check connection") always runs the test.
+ *
+ * Errors are classified (logged out / blocked / Blinkit down / unreachable / pending payment /
+ * other) and each has its own spoken line; the generic one and the success/unavailable lines can
+ * be overridden from the DynamoDB item (speech_error, speech_success, speech_unavailable).
  *
  * Nothing is ever substituted, nothing is ordered without the spoken total + a "yes".
  * The access_token is never logged and never spoken.
@@ -70,6 +77,9 @@ async function config() {
     product_spoken: s.product_spoken ?? DEFAULTS.product_spoken,
     address_spoken: s.address_spoken ?? "your home address",
     payment: String(s.payment ?? "cod").toLowerCase(), // "cod" (default) | "upi"
+    speech_error: s.speech_error || undefined, // overrides the generic error line
+    speech_success: s.speech_success || undefined, // overrides the COD success line ({total} is replaced)
+    speech_unavailable: s.speech_unavailable || undefined, // overrides the out-of-stock line
     quantity: num(s.quantity, DEFAULTS.quantity),
     address_id: num(s.address_id, undefined),
     vpa: s.vpa || undefined,
@@ -79,6 +89,36 @@ async function config() {
 
 const rupees = (n) => (n === undefined || n === null ? "an unknown amount" : `${Math.round(Number(n))} rupees`);
 const redact = (msg) => String(msg ?? "").replace(/v2::[0-9a-f-]+/gi, "v2::<redacted>").slice(0, 600);
+
+/**
+ * Turn an exception into a spoken line. `stage` is "quoting" (nothing could have been ordered),
+ * "paying" (an order MAY have been placed) or "smoke". `custom` is the DynamoDB override.
+ */
+function explainError(err, stage, custom) {
+  const status = Number(err?.status ?? 0);
+  const body = JSON.stringify(err?.body ?? "").toLowerCase();
+  const msg = String(err?.message ?? err ?? "").toLowerCase();
+  const tail =
+    stage === "paying"
+      ? " I'm not sure whether the order went through, so please check the Blinkit app."
+      : " Nothing was ordered.";
+  if (status === 401 || body.includes("force_logout") || msg.includes("not logged in")) {
+    return { kind: "logged_out", speech: "Blinkit has logged me out. Please log in again on the computer and update my token." + tail };
+  }
+  if (status === 403 || status === 429) {
+    return { kind: "blocked", speech: "Blinkit is blocking my requests right now. Please try again in a few minutes." + tail };
+  }
+  if (status >= 500) {
+    return { kind: "blinkit_down", speech: "Blinkit's servers are having trouble. Please try again in a few minutes." + tail };
+  }
+  if (/econn|enotfound|etimedout|timeout|timed out|network|socket|tls|fetch failed|impit/.test(msg)) {
+    return { kind: "unreachable", speech: "I couldn't reach Blinkit at all. Check the internet connection and try again." + tail };
+  }
+  if (msg.includes("pending payment") || msg.includes("no pas token")) {
+    return { kind: "pending_payment", speech: "Blinkit says this order already has a payment pending. Please check the Blinkit app before trying again." };
+  }
+  return { kind: "unknown", speech: (custom ?? "Sorry, something went wrong with Blinkit.") + tail };
+}
 
 /** Best-effort "Checking Blinkit…" while the API calls run (Alexa otherwise sits silent). */
 function progressive(handlerInput, text) {
@@ -95,9 +135,7 @@ function progressive(handlerInput, text) {
 
 /* ----------------------------- handlers ----------------------------- */
 
-const LaunchRequestHandler = {
-  canHandle: (h) => Alexa.getRequestType(h.requestEnvelope) === "LaunchRequest",
-  async handle(h) {
+async function smokeTest(h) {
     const t0 = Date.now();
     try {
       const { ensureAuthKey } = await lib(); // loads impit — the Gate-2 moment
@@ -129,20 +167,51 @@ const LaunchRequestHandler = {
     } catch (err) {
       const detail = redact(err?.stack ?? err?.message ?? err);
       console.error("smoke test failed:", detail);
+      const { speech } = explainError(err, "smoke");
       return h.responseBuilder
-        .speak(`Milk man could not reach Blinkit on node ${process.version}. ${redact(err?.message ?? err).slice(0, 200)}`)
+        .speak(`Milk man could not reach Blinkit on node ${process.version}. ${speech} ${redact(err?.message ?? err).slice(0, 160)}`)
         .withSimpleCard("Milk man — smoke test FAILED", `node ${process.version} ${process.arch}\n${detail}`)
         .withShouldEndSession(true)
         .getResponse();
     }
+}
+
+/** Is the DynamoDB item seeded? Cheap: no network. Used to pick smoke test vs. order on launch. */
+async function isConfigured() {
+  try {
+    return (await config()).ready;
+  } catch {
+    return false; // e.g. impit failed to load — fall through to the smoke test, which explains it
+  }
+}
+
+const LaunchRequestHandler = {
+  canHandle: (h) => Alexa.getRequestType(h.requestEnvelope) === "LaunchRequest",
+  async handle(h) {
+    // Once configured, launching IS ordering — so an Alexa Routine whose phrase is "order milk"
+    // and whose action is "open Milk Man" gives a name-free "Alexa, order milk".
+    if (await isConfigured()) return quoteAndAsk(h);
+    return smokeTest(h);
   },
+};
+
+const StatusIntentHandler = {
+  canHandle: (h) =>
+    Alexa.getRequestType(h.requestEnvelope) === "IntentRequest" &&
+    Alexa.getIntentName(h.requestEnvelope) === "StatusIntent",
+  handle: (h) => smokeTest(h),
 };
 
 const OrderMilkIntentHandler = {
   canHandle: (h) =>
     Alexa.getRequestType(h.requestEnvelope) === "IntentRequest" &&
     Alexa.getIntentName(h.requestEnvelope) === "OrderMilkIntent",
-  async handle(h) {
+  handle: (h) => quoteAndAsk(h),
+};
+
+/** Turn 1: stock check → server cart → spoken real total → wait for yes/no. */
+async function quoteAndAsk(h) {
+    h.attributesManager.setRequestAttributes({ stage: "quoting" });
     const t0 = Date.now();
     const lap = (l) => console.log(`[order ${Date.now() - t0}ms] ${l}`);
     const { searchProducts, prepareCheckout } = await lib();
@@ -162,7 +231,7 @@ const OrderMilkIntentHandler = {
     if (!hit || (hit.inventory ?? 0) <= 0) {
       lap(`product ${cfg.product_id} not available`);
       return h.responseBuilder
-        .speak(`Sorry, ${cfg.product_spoken} isn't available at your Blinkit store right now. I haven't ordered anything.`)
+        .speak(cfg.speech_unavailable ?? `Sorry, ${cfg.product_spoken} isn't available at your Blinkit store right now. I haven't ordered anything.`)
         .withShouldEndSession(true)
         .getResponse();
     }
@@ -212,8 +281,7 @@ const OrderMilkIntentHandler = {
       )
       .withShouldEndSession(false)
       .getResponse();
-  },
-};
+}
 
 const YesIntentHandler = {
   canHandle: (h) =>
@@ -235,6 +303,7 @@ const YesIntentHandler = {
         .withShouldEndSession(true)
         .getResponse();
     }
+    h.attributesManager.setRequestAttributes({ stage: "quoting" });
     const { prepareOrder, initUpiPayment, placeCashOrder, orderCount, CASH } = await lib();
     const cfg = await config();
     const t0 = Date.now();
@@ -253,6 +322,7 @@ const YesIntentHandler = {
       const order = await prepareOrder(attrs.cart_id, CASH); // createOrder + zomato_payment_hash(cash)
       lap(`order ${order.orderId} payable=${order.payable} (cod)`);
       h.attributesManager.setSessionAttributes({}); // one shot — never place the same cart twice
+      h.attributesManager.setRequestAttributes({ stage: "paying" }); // from here an order may exist
       const r = await placeCashOrder(order, cfg.phone);
       lap(`cod: available=${r.available} status=${r.status}`);
       const total = rupees(order.payable ?? attrs.payable);
@@ -275,7 +345,7 @@ const YesIntentHandler = {
       return h.responseBuilder
         .speak(
           confirmed
-            ? `Done. Your milk is ordered. Pay ${total} in cash when it arrives.`
+            ? (cfg.speech_success ?? "Done. Your milk is ordered. Pay {total} in cash when it arrives.").replace("{total}", total)
             : `Blinkit accepted the cash on delivery request for ${total} with status ${r.status}. Please check the Blinkit app to confirm the order is live.`,
         )
         .withSimpleCard("Milk man — ordered (cash on delivery)", `Order ${r.orderId}\n${attrs.quantity} × ${attrs.product}\nPay ₹${r.payable} in cash\nstatus: ${r.status}\nlive orders: ${live ?? "?"}`)
@@ -286,6 +356,7 @@ const YesIntentHandler = {
     const order = await prepareOrder(attrs.cart_id); // createOrder + zomato_payment_hash (upi_qr)
     lap(`order ${order.orderId} payable=${order.payable}`);
     h.attributesManager.setSessionAttributes({}); // one shot — never pay the same cart twice
+    h.attributesManager.setRequestAttributes({ stage: "paying" });
 
     let result;
     let method = cfg.vpa ? "collect" : "qr";
@@ -367,12 +438,22 @@ const SessionEndedRequestHandler = {
 
 const ErrorHandler = {
   canHandle: () => true,
-  handle(h, error) {
+  async handle(h, error) {
     const detail = redact(error?.stack ?? error?.message ?? error);
-    console.error("handler error:", detail, error?.body ? redact(JSON.stringify(error.body)) : "");
+    const body = error?.body ? redact(JSON.stringify(error.body)) : "";
+    console.error("handler error:", detail, body);
+    const stage = h.attributesManager.getRequestAttributes()?.stage ?? "quoting";
+    let custom;
+    try {
+      custom = (await config()).speech_error;
+    } catch {
+      /* config itself failed — use the built-in line */
+    }
+    const { kind, speech } = explainError(error, stage, custom);
+    h.attributesManager.setSessionAttributes({});
     return h.responseBuilder
-      .speak("Sorry, something went wrong talking to Blinkit, so I haven't ordered anything. The details are in the Alexa app.")
-      .withSimpleCard("Milk man — error", detail)
+      .speak(speech)
+      .withSimpleCard(`Milk man — error (${kind}, while ${stage})`, `${detail}\n${body}`)
       .withShouldEndSession(true)
       .getResponse();
   },
@@ -381,6 +462,7 @@ const ErrorHandler = {
 export const handler = Alexa.SkillBuilders.custom()
   .addRequestHandlers(
     LaunchRequestHandler,
+    StatusIntentHandler,
     OrderMilkIntentHandler,
     YesIntentHandler,
     NoOrStopHandler,

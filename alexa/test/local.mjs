@@ -42,8 +42,11 @@ async function turn(label, request, isNew = false) {
 }
 
 const only = process.argv[2];
-await turn("LaunchRequest", { type: "LaunchRequest" }, true);
+const intent = (name) => ({ type: "IntentRequest", intent: { name, confirmationStatus: "NONE", slots: {} } });
+await turn("StatusIntent (smoke test)", intent("StatusIntent"), true);
 if (only === "launch") process.exit(0);
-await turn("OrderMilkIntent", { type: "IntentRequest", intent: { name: "OrderMilkIntent", confirmationStatus: "NONE", slots: {} } }, true);
-if (attributes.cart_id) await turn("AMAZON.YesIntent (DRY RUN)", { type: "IntentRequest", intent: { name: "AMAZON.YesIntent", confirmationStatus: "NONE" } });
-await turn("AMAZON.YesIntent with no cart (guard)", { type: "IntentRequest", intent: { name: "AMAZON.YesIntent", confirmationStatus: "NONE" } }, true);
+await turn("LaunchRequest (configured → quotes, like a Routine would)", { type: "LaunchRequest" }, true);
+await turn("AMAZON.NoIntent", intent("AMAZON.NoIntent"));
+await turn("OrderMilkIntent", intent("OrderMilkIntent"), true);
+if (attributes.cart_id) await turn("AMAZON.YesIntent (DRY RUN)", intent("AMAZON.YesIntent"));
+await turn("AMAZON.YesIntent with no cart (guard)", intent("AMAZON.YesIntent"), true);

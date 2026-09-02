@@ -48,6 +48,18 @@
             "we need milk",
             "order milk please"
           ]
+        },
+        {
+          "name": "StatusIntent",
+          "slots": [],
+          "samples": [
+            "check connection",
+            "connection check",
+            "status",
+            "are you working",
+            "run a test",
+            "test blinkit"
+          ]
         }
       ],
       "types": []
