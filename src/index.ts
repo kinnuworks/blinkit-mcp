@@ -21,7 +21,7 @@ import {
   prepareCheckout,
 } from "./api.js";
 import { addItems, removeItem, clearCart, viewCart } from "./cart.js";
-import { prepareOrder, initUpiPayment, pollPaymentStatus, checkPaymentStatus, userPhone } from "./payment.js";
+import { prepareOrder, initUpiPayment, pollPaymentStatus, checkPaymentStatus, userPhone, listPaymentMethods, placeCashOrder, CASH } from "./payment.js";
 import { loadPrefs, savePrefs, pickBest, resolveStaple, type Staple } from "./staples.js";
 
 const server = new McpServer(
@@ -312,6 +312,33 @@ tool(
       return { order: { orderId: order.orderId, payable: order.payable }, payment: result, final_status: status };
     }
     return { order: { orderId: order.orderId, payable: order.payable }, payment: result, note: "Use blinkit_payment_status to check, or pass wait:true to stream updates." };
+  },
+);
+
+tool(
+  "blinkit_payment_methods",
+  "List the payment methods zpaykit offers for a checked-out cart (read-only, nothing charged). Use it to see whether 'cash' (Cash on Delivery) is enabled for this order before calling blinkit_pay_cod.",
+  { cart_id: z.string() },
+  async ({ cart_id }) => {
+    const phone = await userPhone();
+    if (!phone) throw new Error("No phone on file; set BLINKIT_PHONE or log in again.");
+    const order = await prepareOrder(cart_id, CASH);
+    const { methods } = await listPaymentMethods(order, phone);
+    return { order: { orderId: order.orderId, payable: order.payable }, methods };
+  },
+);
+
+tool(
+  "blinkit_pay_cod",
+  "PLACES A REAL ORDER with Cash on Delivery for a checked-out cart (from blinkit_checkout). No approval step follows — confirm the total with the user first. Returns available:false and places nothing if COD is not enabled for this order.",
+  { cart_id: z.string() },
+  async ({ cart_id }) => {
+    const phone = await userPhone();
+    if (!phone) throw new Error("No phone on file; set BLINKIT_PHONE or log in again.");
+    const order = await prepareOrder(cart_id, CASH);
+    const r = await placeCashOrder(order, phone);
+    await notify(r.available ? "info" : "warning", r.available ? `COD order ${r.orderId} for ₹${r.payable}: ${r.status}.` : `COD not available for order ${r.orderId}; nothing placed.`);
+    return r;
   },
 );
 

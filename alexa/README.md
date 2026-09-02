@@ -9,7 +9,8 @@ One phrase → four Vijaya Dairy Gold Full Cream Milk (500 ml) to the saved Vija
   → stock check → server cart → bind address 153331019 → validate
   → "4 Vijaya Gold full cream milk at 39 rupees each. Your total including fees is 166 rupees … Shall I place the order?"
 "Yes"
-  → createOrder → UPI collect to your VPA (fallback: upi:// link on an Alexa-app card) → "approve it in PhonePe"
+  → createOrder → Cash on Delivery via zpaykit (method id 1 "cash") → "Done. Pay 166 rupees in cash when it arrives."
+     (payment="upi" instead: UPI collect to your VPA, fallback upi:// link on an Alexa-app card)
 ```
 
 Nothing is substituted. Nothing is paid without the spoken total and a "yes". The `cart_id` lives only
@@ -61,14 +62,15 @@ Test tab → enable Development → type `open milk man`.
 
 ### 5. Seed the config (DynamoDB only — never commit the token)
 ```bash
-node scripts/make-seed.mjs --vpa yourid@ybl
+node scripts/make-seed.mjs            # payment=cod by default; add --payment upi --vpa you@ybl for UPI
 ```
 writes `~/.blinkit-mcp/dynamo-seed.json`. Code tab → **"AWS resources"** link (bottom-left) → DynamoDB → the table →
 Explore items → open item `id = blinkit` (created by the smoke test) → JSON view (DynamoDB JSON **off**) → replace
 with the file's contents → Save. Delete the local seed file afterwards.
 
 Fields: `access_token, device_id, session_uuid, user_id, phone, lat, lon, merchant_id` (from the login),
-`address_id=153331019`, `address_spoken`, `product_id=564250`, `quantity=4`, `product_query`, `product_spoken`, `vpa`.
+`address_id=153331019`, `address_spoken`, `product_id=564250`, `quantity=4`, `product_query`, `product_spoken`,
+`payment` (`cod`|`upi`), `vpa`.
 
 ### 6. Test as text, then on the Echo
 Test tab: `ask milk man to order milk` → hear the total → `no` (nothing charged). Repeat with `yes` for the first
@@ -81,7 +83,11 @@ partition key `id` (String), env `BLINKIT_TABLE=<table>`; give the role `dynamod
 `node scripts/make-seed.mjs --put` (needs AWS creds + `BLINKIT_TABLE`). Alexa trigger → skill endpoint = the Lambda ARN.
 
 ## Open risks
-- **UPI collect unverified.** RESEARCH.md §9 says web zpaykit only advertises `upi_qr`; a `upi_collect` attempt once
+- **COD `makePayment` never fired yet.** `getPaymentMethods` lists "Cash on Delivery" (id 1, `cash`) as enabled for
+  the ₹166 cart at this address, and `zomato_payment_hash` accepts the cash method (both verified 2026-09-02,
+  read-only). The final `makePayment(cash)` call is the one that actually places the order, so it was NOT run.
+  The first live "yes" is the test; the handler then reads `order_count.live_orders` and says whether it saw the order.
+- **UPI collect unverified** (only matters if `payment=upi`). RESEARCH.md §9 says web zpaykit only advertises `upi_qr`; a `upi_collect` attempt once
   returned `failed`. The handler tries collect first (if `vpa` set) and falls back to the QR intent link on an Alexa-app
   card. Verify on the first real order.
 - **Token expiry.** `gr_1_accessToken` cookie was set to expire 2026-09-09; the token itself may live longer. If

@@ -39,13 +39,14 @@ const item = {
   product_query: "Vijaya milk",
   product_spoken: "Vijaya Gold full cream milk, five hundred ml",
   quantity: Number(arg("qty", 4)),
-  vpa: arg("vpa", s.vpa ?? ""), // your UPI id, e.g. name@ybl — empty → QR-link fallback
+  payment: arg("payment", s.payment ?? "cod"), // "cod" (Cash on Delivery, verified offered) | "upi"
+  vpa: arg("vpa", s.vpa ?? ""), // only for payment=upi: your UPI id, e.g. name@ybl — empty → QR-link fallback
 };
 const out = join(HOME, "dynamo-seed.json");
 await writeFile(out, JSON.stringify(item, null, 2), { mode: 0o600 });
 console.log(`wrote ${out}`);
 console.log("keys:", Object.keys(item).join(", "));
-console.log(`address_id=${item.address_id} product_id=${item.product_id} quantity=${item.quantity} vpa=${item.vpa || "(none — set with --vpa you@bank)"}`);
+console.log(`address_id=${item.address_id} product_id=${item.product_id} quantity=${item.quantity} payment=${item.payment} vpa=${item.vpa || "(none)"}`);
 
 if (process.argv.includes("--put")) {
   const { DynamoDBClient } = await import("@aws-sdk/client-dynamodb");

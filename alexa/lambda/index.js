@@ -4,8 +4,9 @@
  *   Turn 1  "order milk"  → OrderMilkIntent : stock check → server cart → bind address →
  *                            validate → speak REAL total → wait for yes/no (cart_id kept in
  *                            session attributes only).
- *   Turn 2  "yes"         → AMAZON.YesIntent (guarded by cart_id) : createOrder → UPI collect
- *                            to the configured VPA (fallback: upi:// link on an Alexa-app card).
+ *   Turn 2  "yes"         → AMAZON.YesIntent (guarded by cart_id) : createOrder → CASH ON DELIVERY
+ *                            (default; verified offered for this cart) — or, with payment="upi", a UPI
+ *                            collect to the configured VPA (fallback: upi:// link on an Alexa-app card).
  *   Launch  "open milk man" → connectivity smoke test (impit + Blinkit bootstrap). This is
  *                            the Gate-2 test: if impit's native module can't load on this
  *                            runtime, the error is spoken and written to the card.
@@ -68,6 +69,7 @@ async function config() {
     product_query: s.product_query ?? DEFAULTS.product_query,
     product_spoken: s.product_spoken ?? DEFAULTS.product_spoken,
     address_spoken: s.address_spoken ?? "your home address",
+    payment: String(s.payment ?? "cod").toLowerCase(), // "cod" (default) | "upi"
     quantity: num(s.quantity, DEFAULTS.quantity),
     address_id: num(s.address_id, undefined),
     vpa: s.vpa || undefined,
@@ -233,7 +235,7 @@ const YesIntentHandler = {
         .withShouldEndSession(true)
         .getResponse();
     }
-    const { prepareOrder, initUpiPayment } = await lib();
+    const { prepareOrder, initUpiPayment, placeCashOrder, orderCount, CASH } = await lib();
     const cfg = await config();
     const t0 = Date.now();
     const lap = (l) => console.log(`[pay ${Date.now() - t0}ms] ${l}`);
@@ -242,12 +244,46 @@ const YesIntentHandler = {
     if (process.env.BLINKIT_DRY_RUN) {
       h.attributesManager.setSessionAttributes({});
       return h.responseBuilder
-        .speak(`Dry run. I would now create order for cart ${attrs.cart_id}, ${rupees(attrs.payable)}, and send a UPI request to ${cfg.vpa ?? "a QR link"}.`)
+        .speak(`Dry run. I would now create order for cart ${attrs.cart_id}, ${rupees(attrs.payable)}, and ${cfg.payment === "cod" ? "place it as cash on delivery" : `send a UPI request to ${cfg.vpa ?? "a QR link"}`}.`)
         .withShouldEndSession(true)
         .getResponse();
     }
 
-    const order = await prepareOrder(attrs.cart_id); // createOrder + zomato_payment_hash
+    if (cfg.payment === "cod") {
+      const order = await prepareOrder(attrs.cart_id, CASH); // createOrder + zomato_payment_hash(cash)
+      lap(`order ${order.orderId} payable=${order.payable} (cod)`);
+      h.attributesManager.setSessionAttributes({}); // one shot — never place the same cart twice
+      const r = await placeCashOrder(order, cfg.phone);
+      lap(`cod: available=${r.available} status=${r.status}`);
+      const total = rupees(order.payable ?? attrs.payable);
+      if (!r.available) {
+        return h.responseBuilder
+          .speak("Cash on delivery isn't available for this order right now, so I haven't placed it. Try again later, or switch milk man to UPI.")
+          .withShouldEndSession(true)
+          .getResponse();
+      }
+      if (/fail|declin|error/i.test(r.status ?? "")) {
+        return h.responseBuilder
+          .speak(`Blinkit rejected the cash on delivery order for ${total}. Nothing was placed. The details are in the Alexa app.`)
+          .withSimpleCard("Milk man — COD rejected", `Order ${r.orderId}, ₹${r.payable}\nstatus: ${r.status}\n${JSON.stringify(r.raw).slice(0, 900)}`)
+          .withShouldEndSession(true)
+          .getResponse();
+      }
+      const live = await orderCount().then((oc) => oc?.live_orders).catch(() => undefined);
+      lap(`live_orders=${live}`);
+      const confirmed = live !== undefined && Number(live) > 0;
+      return h.responseBuilder
+        .speak(
+          confirmed
+            ? `Done. Your milk is ordered. Pay ${total} in cash when it arrives.`
+            : `Blinkit accepted the cash on delivery request for ${total} with status ${r.status}. Please check the Blinkit app to confirm the order is live.`,
+        )
+        .withSimpleCard("Milk man — ordered (cash on delivery)", `Order ${r.orderId}\n${attrs.quantity} × ${attrs.product}\nPay ₹${r.payable} in cash\nstatus: ${r.status}\nlive orders: ${live ?? "?"}`)
+        .withShouldEndSession(true)
+        .getResponse();
+    }
+
+    const order = await prepareOrder(attrs.cart_id); // createOrder + zomato_payment_hash (upi_qr)
     lap(`order ${order.orderId} payable=${order.payable}`);
     h.attributesManager.setSessionAttributes({}); // one shot — never pay the same cart twice
 
@@ -306,7 +342,7 @@ const HelpIntentHandler = {
     Alexa.getIntentName(h.requestEnvelope) === "AMAZON.HelpIntent",
   handle: (h) =>
     h.responseBuilder
-      .speak("Say order milk. I'll check Blinkit, tell you the total, and place the order only after you say yes. Payment is a UPI request you approve in PhonePe.")
+      .speak("Say order milk. I'll check Blinkit, tell you the total, and place the order only after you say yes. You pay cash when it arrives.")
       .reprompt("Say order milk, or stop.")
       .getResponse(),
 };

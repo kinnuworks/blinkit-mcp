@@ -31,8 +31,11 @@ const ZBASE = "https://www.zomato.com/zpaykit";
 function zomatoClient() {
     return new Impit({ browser: "chrome" });
 }
+export const UPI_QR = { id: 50, type: "upi_qr" };
+/** Cash on Delivery. Offered by zpaykit for Blinkit (category "cash", subtype id 1) when eligible. */
+export const CASH = { id: 1, type: "cash" };
 /** Steps 1–2: mint a payment session for a (server-synced) cart. Throws if a payment is already pending. */
-export async function prepareOrder(cartId) {
+export async function prepareOrder(cartId, method = UPI_QR) {
     const co = await request(`/createOrder/${cartId}`, { authed: true });
     const pasToken = co?.response?.access_token;
     const orderHash = co?.orderHash;
@@ -43,9 +46,11 @@ export async function prepareOrder(cartId) {
     const ph = await request(`/zomato_payment_hash`, {
         method: "POST",
         authed: true,
-        json: { cart_id: String(cartId), payment_info_data: { payment_method_id: 50, payment_method_type: "upi_qr" } },
+        json: { cart_id: String(cartId), payment_info_data: { payment_method_id: method.id, payment_method_type: method.type } },
     });
     const meta = ph?.zomato_payment_hash_meta;
+    if (!meta?.payment_hash)
+        throw new Error(`zomato_payment_hash returned no hash for ${method.type}: ${JSON.stringify(ph).slice(0, 300)}`);
     return {
         cartId: String(cartId),
         pasToken,
@@ -132,6 +137,51 @@ export async function initUpiPayment(o, phone, opts = { method: "qr" }) {
             raw: mp?.response ? undefined : mp,
         },
     };
+}
+/**
+ * Step 3 only: what zpaykit offers for THIS order (read-only, nothing is charged). Verified 2026-09-02
+ * for a ₹166 Blinkit cart: wallets(mobikwik), card, netbanking, upi_qr(50), **cash(1) "Cash on Delivery"**,
+ * lazypay. The returned client holds the laravel_session cookie for a follow-up makePayment.
+ */
+export async function listPaymentMethods(o, phone) {
+    const client = zomatoClient();
+    const pm = await zpost(client, "getPaymentMethods", o.pasToken, { ...commonForm(o, phone), online_payments_flag: "1", isMobileView: "false" });
+    const cats = pm?.response?.paymentMethods?.categories ?? [];
+    const methods = [];
+    for (const c of cats) {
+        const subs = c?.subtypes?.length ? c.subtypes : [c];
+        for (const m of subs) {
+            methods.push({
+                id: m.id,
+                type: m.type,
+                title: m.display_text ?? m.title ?? c.title ?? m.type,
+                category: m.payment_category ?? c.type,
+                enabled: (m.status ?? 1) === 1 && (m.visible ?? 1) === 1,
+            });
+        }
+    }
+    return { methods, client, raw: pm };
+}
+/**
+ * Steps 3–4 for CASH ON DELIVERY. `o` must come from `prepareOrder(cartId, CASH)`.
+ * ⚠️ This PLACES A REAL ORDER when it succeeds — there is no approval step after it.
+ * Returns available:false (and places nothing) if zpaykit does not list cash as enabled.
+ */
+export async function placeCashOrder(o, phone) {
+    const { methods, client } = await listPaymentMethods(o, phone);
+    const cash = methods.find((m) => m.type === "cash" || m.category === "cash");
+    if (!cash?.enabled)
+        return { orderId: o.orderId, payable: o.payable, available: false, raw: methods };
+    const mp = await zpost(client, "makePayment", o.pasToken, {
+        ...commonForm(o, phone),
+        payment_method_id: String(cash.id ?? CASH.id),
+        payment_method_type: "cash",
+        payments_config_params: "[object Object]",
+    });
+    const t = mp?.response?.transaction;
+    const status = String(t?.status ?? mp?.response?.status ?? mp?.status ?? "unknown");
+    await savePaymentContext({ ...o, phone, trackId: t?.track_id });
+    return { orderId: o.orderId, payable: o.payable, available: true, status, raw: mp };
 }
 /**
  * Step 5: poll verifyPaymentStatus until terminal or timeout. `onUpdate(status, attempt)` fires on
