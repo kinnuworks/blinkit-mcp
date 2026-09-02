@@ -1,0 +1,56 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "milk man",
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.YesIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": []
+        },
+        {
+          "name": "OrderMilkIntent",
+          "slots": [],
+          "samples": [
+            "order milk",
+            "get milk",
+            "buy milk",
+            "order some milk",
+            "get me milk",
+            "get me some milk",
+            "order the milk",
+            "buy some milk",
+            "milk",
+            "i need milk",
+            "we need milk",
+            "order milk please"
+          ]
+        }
+      ],
+      "types": []
+    }
+  }
+}

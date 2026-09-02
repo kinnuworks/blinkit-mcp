@@ -6,3 +6,8 @@ dist/
 session.json
 .blinkit-mcp/
 .claude/
+
+# Alexa lambda
+alexa/lambda/node_modules/
+*.seed.json
+dynamo-seed.json

@@ -38,7 +38,39 @@ export interface Session {
 const DIR = join(homedir(), ".blinkit-mcp");
 const FILE = join(DIR, "session.json");
 
+/**
+ * Pluggable persistence. The default store is the local JSON file above. Runtimes
+ * without a persistent filesystem (AWS Lambda / Alexa-hosted skills) install their
+ * own store — e.g. a DynamoDB item — via `useSessionStore()` before the first call.
+ */
+export interface SessionStore {
+  /** Return the persisted session, or null if none exists yet. */
+  load(): Promise<Partial<Session> | null>;
+  save(s: Session): Promise<void>;
+}
+
+const fileStore: SessionStore = {
+  async load() {
+    try {
+      return JSON.parse(await readFile(FILE, "utf8")) as Partial<Session>;
+    } catch {
+      return null;
+    }
+  },
+  async save(s) {
+    await mkdir(DIR, { recursive: true, mode: 0o700 });
+    await writeFile(FILE, JSON.stringify(s, null, 2), { mode: 0o600 });
+  },
+};
+
+let store: SessionStore = fileStore;
 let cache: Session | null = null;
+
+/** Swap the persistence backend (and drop the in-memory cache). */
+export function useSessionStore(s: SessionStore): void {
+  store = s;
+  cache = null;
+}
 
 function freshSession(): Session {
   return {
@@ -49,10 +81,10 @@ function freshSession(): Session {
 
 export async function loadSession(): Promise<Session> {
   if (cache) return cache;
-  try {
-    const raw = await readFile(FILE, "utf8");
-    cache = { ...freshSession(), ...JSON.parse(raw) } as Session;
-  } catch {
+  const loaded = await store.load();
+  if (loaded) {
+    cache = { ...freshSession(), ...loaded } as Session;
+  } else {
     cache = freshSession();
     await saveSession(cache);
   }
@@ -61,8 +93,7 @@ export async function loadSession(): Promise<Session> {
 
 export async function saveSession(s: Session): Promise<void> {
   cache = s;
-  await mkdir(DIR, { recursive: true, mode: 0o700 });
-  await writeFile(FILE, JSON.stringify(s, null, 2), { mode: 0o600 });
+  await store.save(s);
 }
 
 /** Merge a partial update into the session and persist. */

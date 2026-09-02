@@ -198,8 +198,14 @@ const CTX_FILE = join(homedir(), ".blinkit-mcp", "payment.json");
 
 /** Persist the in-flight payment so status can be re-checked across tool calls / restarts. */
 export async function savePaymentContext(ctx: PaymentContext): Promise<void> {
-  await mkdir(join(homedir(), ".blinkit-mcp"), { recursive: true, mode: 0o700 });
-  await writeFile(CTX_FILE, JSON.stringify(ctx, null, 2), { mode: 0o600 });
+  // Best-effort: on read-only filesystems (Lambda) the write fails and the caller
+  // should not — the in-flight payment result has already been returned to it.
+  try {
+    await mkdir(join(homedir(), ".blinkit-mcp"), { recursive: true, mode: 0o700 });
+    await writeFile(CTX_FILE, JSON.stringify(ctx, null, 2), { mode: 0o600 });
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function loadPaymentContext(): Promise<PaymentContext | null> {

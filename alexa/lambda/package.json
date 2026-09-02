@@ -1,0 +1,18 @@
+{
+  "name": "milk-man-skill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Alexa skill: one phrase orders 4 x one fixed milk SKU on Blinkit. Uses the blinkit-mcp library (vendored in ./blinkit) directly — no MCP at runtime.",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1124.0",
+    "@aws-sdk/lib-dynamodb": "^3.1124.0",
+    "ask-sdk-core": "^2.14.0",
+    "ask-sdk-model": "^1.86.0",
+    "impit": "0.14.1"
+  }
+}

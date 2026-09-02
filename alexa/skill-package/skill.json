@@ -1,0 +1,67 @@
+{
+  "manifest": {
+    "manifestVersion": "1.0",
+    "publishingInformation": {
+      "locales": {
+        "en-IN": {
+          "name": "Milk Man",
+          "summary": "Orders four Vijaya Gold full cream milk from Blinkit to one fixed address.",
+          "description": "Personal skill. Says the real Blinkit total and orders only after you say yes. Payment is a UPI request approved in PhonePe.",
+          "examplePhrases": [
+            "Alexa, open milk man",
+            "Alexa, ask milk man to order milk",
+            "Alexa, tell milk man to get milk"
+          ],
+          "keywords": [
+            "milk",
+            "blinkit"
+          ]
+        },
+        "en-US": {
+          "name": "Milk Man",
+          "summary": "Orders four Vijaya Gold full cream milk from Blinkit to one fixed address.",
+          "description": "Personal skill. Says the real Blinkit total and orders only after you say yes. Payment is a UPI request approved in PhonePe.",
+          "examplePhrases": [
+            "Alexa, open milk man",
+            "Alexa, ask milk man to order milk",
+            "Alexa, tell milk man to get milk"
+          ],
+          "keywords": [
+            "milk",
+            "blinkit"
+          ]
+        },
+        "en-GB": {
+          "name": "Milk Man",
+          "summary": "Orders four Vijaya Gold full cream milk from Blinkit to one fixed address.",
+          "description": "Personal skill. Says the real Blinkit total and orders only after you say yes. Payment is a UPI request approved in PhonePe.",
+          "examplePhrases": [
+            "Alexa, open milk man",
+            "Alexa, ask milk man to order milk",
+            "Alexa, tell milk man to get milk"
+          ],
+          "keywords": [
+            "milk",
+            "blinkit"
+          ]
+        }
+      },
+      "isAvailableWorldwide": false,
+      "distributionCountries": [
+        "IN"
+      ],
+      "testingInstructions": "Personal use only; not for publication.",
+      "category": "SHOPPING"
+    },
+    "apis": {
+      "custom": {}
+    },
+    "privacyAndCompliance": {
+      "allowsPurchases": true,
+      "usesPersonalInfo": true,
+      "isChildDirected": false,
+      "isExportCompliant": true,
+      "containsAds": false
+    }
+  }
+}
