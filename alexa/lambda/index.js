@@ -14,14 +14,39 @@
  * The access_token is never logged and never spoken.
  */
 import Alexa from "ask-sdk-core";
-import { useSessionStore, loadSession, updateSession } from "./blinkit/session.js";
-import { ensureAuthKey } from "./blinkit/client.js";
-import { searchProducts, prepareCheckout } from "./blinkit/api.js";
-import { prepareOrder, initUpiPayment } from "./blinkit/payment.js";
 import { createStore } from "./store.js";
 
 const store = createStore();
-if (store) useSessionStore(store);
+
+/**
+ * The blinkit library pulls in `impit`, a native module. It is imported LAZILY so that if
+ * the binary cannot load on this Lambda runtime (old glibc / wrong arch) the failure is
+ * caught and SPOKEN by the smoke test instead of killing the whole function at init.
+ */
+let libPromise;
+function lib() {
+  libPromise ??= (async () => {
+    const [session, client, api, payment] = await Promise.all([
+      import("./blinkit/session.js"),
+      import("./blinkit/client.js"),
+      import("./blinkit/api.js"),
+      import("./blinkit/payment.js"),
+    ]);
+    if (store) session.useSessionStore(store);
+    return { ...session, ...client, ...api, ...payment };
+  })();
+  return libPromise;
+}
+
+/** Drop the library's in-process session cache on every request so a seeded/edited DynamoDB
+ *  item is picked up immediately, even by a warm container. */
+const FreshSessionInterceptor = {
+  async process() {
+    if (!store) return;
+    const { useSessionStore } = await lib();
+    useSessionStore(store);
+  },
+};
 
 /* ----------------------------- config ----------------------------- */
 
@@ -34,6 +59,7 @@ const DEFAULTS = {
 const CART_TTL_MS = 5 * 60 * 1000; // a quoted cart is only confirmable for 5 minutes
 
 async function config() {
+  const { loadSession } = await lib();
   const s = await loadSession();
   const num = (v, d) => (v === undefined || v === null || v === "" ? d : Number(v));
   return {
@@ -72,6 +98,7 @@ const LaunchRequestHandler = {
   async handle(h) {
     const t0 = Date.now();
     try {
+      const { ensureAuthKey } = await lib(); // loads impit — the Gate-2 moment
       const key = await ensureAuthKey(); // exercises impit's native TLS client end-to-end
       const cfg = await config();
       const ms = Date.now() - t0;
@@ -101,7 +128,7 @@ const LaunchRequestHandler = {
       const detail = redact(err?.stack ?? err?.message ?? err);
       console.error("smoke test failed:", detail);
       return h.responseBuilder
-        .speak(`Milk man could not reach Blinkit. ${redact(err?.message ?? err).slice(0, 200)}`)
+        .speak(`Milk man could not reach Blinkit on node ${process.version}. ${redact(err?.message ?? err).slice(0, 200)}`)
         .withSimpleCard("Milk man — smoke test FAILED", `node ${process.version} ${process.arch}\n${detail}`)
         .withShouldEndSession(true)
         .getResponse();
@@ -116,6 +143,7 @@ const OrderMilkIntentHandler = {
   async handle(h) {
     const t0 = Date.now();
     const lap = (l) => console.log(`[order ${Date.now() - t0}ms] ${l}`);
+    const { searchProducts, prepareCheckout } = await lib();
     const cfg = await config();
     if (!cfg.ready) {
       return h.responseBuilder
@@ -205,6 +233,7 @@ const YesIntentHandler = {
         .withShouldEndSession(true)
         .getResponse();
     }
+    const { prepareOrder, initUpiPayment } = await lib();
     const cfg = await config();
     const t0 = Date.now();
     const lap = (l) => console.log(`[pay ${Date.now() - t0}ms] ${l}`);
@@ -323,6 +352,7 @@ export const handler = Alexa.SkillBuilders.custom()
     FallbackIntentHandler,
     SessionEndedRequestHandler,
   )
+  .addRequestInterceptors(FreshSessionInterceptor)
   .addErrorHandlers(ErrorHandler)
   .withApiClient(new Alexa.DefaultApiClient())
   .withCustomUserAgent("milk-man/0.1.0")
