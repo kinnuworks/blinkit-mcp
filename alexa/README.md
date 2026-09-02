@@ -95,3 +95,23 @@ partition key `id` (String), env `BLINKIT_TABLE=<table>`; give the role `dynamod
 - **8-second budget.** Turn 1 measured ~0.6 s from a Mac; Lambda cold start + impit init adds ~1 s. Fine.
 - **`req_key` rotation.** If the bootstrap starts returning 400, Blinkit rotated the web bundle's request key.
   It's read from `BLINKIT_REQ_KEY`; hosted skills have no env-var UI, so edit the constant in `blinkit/client.js`.
+
+## Keeping the token alive
+
+The skill acts as you using one **access_token** (format `v2::<uuid>`) captured at login — an opaque
+server-side session id, not a JWT with a readable expiry. Verified alive 2026-09-02. The `2026-09-09`
+date you may have seen is only the browser **cookie's** expiry from the other (Playwright) app, not the
+token's own lifetime; the token itself typically outlives that. There is **no refresh token** and login
+is phone + OTP, so renewal cannot be fully hands-off — you type the SMS code once.
+
+**When it dies** the skill detects the 401 and says *"Blinkit has logged me out. Please log in again on
+the computer and update my token."* To fix (about two minutes):
+```bash
+node scripts/relogin.mjs <your-10-digit-phone>        # you enter the OTP; updates session.json
+node scripts/make-seed.mjs                            # rebuild the DynamoDB item
+# → paste ~/.blinkit-mcp/dynamo-seed.json into the "blinkit" item (Code tab → DynamoDB link)
+```
+On an own-AWS-account Lambda it's one step: `node scripts/relogin.mjs <phone> --put` (with `BLINKIT_TABLE` set).
+
+You don't need the laptop to *order* — only to *re-login* on the rare occasions the token lapses.
+
