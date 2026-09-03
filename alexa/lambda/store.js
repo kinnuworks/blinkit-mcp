@@ -19,8 +19,36 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 
+/**
+ * Simplest backend for a self-hosted Lambda: the whole session as ONE JSON string in the
+ * `BLINKIT_SESSION` environment variable (Lambda encrypts env vars at rest). No database, no IAM.
+ * Read-only — the library's in-memory cache handles per-invocation writes, and auth_key is cheap to
+ * refetch on a cold start. To rotate the token you edit this one env var (see scripts/make-env.mjs).
+ */
+function envStore() {
+  const raw = process.env.BLINKIT_SESSION;
+  if (!raw) return null;
+  let seed;
+  try {
+    seed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error("BLINKIT_SESSION is not valid JSON: " + e.message);
+  }
+  return {
+    kind: "env:BLINKIT_SESSION",
+    async load() {
+      return seed;
+    },
+    async save() {
+      /* env vars are read-only from inside the function; the in-memory cache holds runtime updates */
+    },
+  };
+}
+
 export function createStore() {
   if (process.env.BLINKIT_STORE === "file") return null;
+  const env = envStore();
+  if (env) return env; // preferred for own-account Lambda — no DynamoDB needed
   const table = process.env.BLINKIT_TABLE ?? process.env.DYNAMODB_PERSISTENCE_TABLE_NAME;
   if (!table) return null;
   const region =
